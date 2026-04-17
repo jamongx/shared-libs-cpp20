@@ -59,7 +59,7 @@ ctest --test-dir build
 ## Project Structure
 
 ```
-libpdk/
+shared-libs-cpp17/
 ├── include/          # Public headers (25 .hpp files)
 │   ├── jthread.hpp   # Thread, Mutex, Semaphore, AutoLock
 │   ├── qthread.hpp   # Event-driven thread with message queue
