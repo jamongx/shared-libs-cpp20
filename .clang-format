@@ -1,0 +1,96 @@
+---
+Language: Cpp
+BasedOnStyle: Google
+Standard: c++17
+
+# ── Indentation ───────────────────────────────────────────────────────────────
+IndentWidth:              4
+TabWidth:                 4
+UseTab:                   Never
+AccessModifierOffset:     -4       # public:/private: at class level (no indent)
+NamespaceIndentation:     None     # namespace pdk { 안쪽 들여쓰기 없음
+IndentCaseLabels:         true
+IndentPPDirectives:       None
+ContinuationIndentWidth:  4
+
+# ── Line length ───────────────────────────────────────────────────────────────
+ColumnLimit: 100
+
+# ── Braces ────────────────────────────────────────────────────────────────────
+# 함수 정의: { 새 줄 (Allman)
+# 클래스·namespace·if/for/while: { 같은 줄 (K&R)
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterClass:            false
+  AfterControlStatement: Never
+  AfterEnum:             false
+  AfterFunction:         true    # 함수 { 새 줄
+  AfterNamespace:        false
+  AfterStruct:           false
+  AfterUnion:            false
+  AfterExternBlock:      false
+  BeforeCatch:           false
+  BeforeElse:            false
+  BeforeLambdaBody:      false
+  IndentBraces:          false
+  SplitEmptyFunction:    false
+  SplitEmptyRecord:      false
+  SplitEmptyNamespace:   false
+
+# ── Pointers & References ─────────────────────────────────────────────────────
+PointerAlignment:   Left    # Logger*, char*, void*
+ReferenceAlignment: Left    # std::string&
+
+# ── Short forms (one-liner 허용 범위) ─────────────────────────────────────────
+AllowShortFunctionsOnASingleLine:  Inline  # { mutex_.lock(); } 허용
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine:      false
+AllowShortLambdasOnASingleLine:    Inline
+AllowShortBlocksOnASingleLine:     Empty
+
+# ── Constructor initializers ──────────────────────────────────────────────────
+BreakConstructorInitializers:     BeforeColon
+PackConstructorInitializers:      CurrentLine  # 한 줄에 들어오면 유지, 길면 분리
+ConstructorInitializerIndentWidth: 4
+
+# ── Function arguments / parameters ──────────────────────────────────────────
+BinPackArguments:  false
+BinPackParameters: false
+AlignAfterOpenBracket: Align
+
+# ── Includes ──────────────────────────────────────────────────────────────────
+SortIncludes:      Never   # include 순서 변경하지 않음
+IncludeBlocks:     Preserve
+
+# ── Spaces ────────────────────────────────────────────────────────────────────
+SpaceBeforeParens:             ControlStatements
+SpaceAfterCStyleCast:          false
+SpaceBeforeAssignmentOperators: true
+SpaceAfterTemplateKeyword:     false
+SpacesInAngles:                Never
+SpaceInEmptyBlock:             false
+
+# ── Alignment ─────────────────────────────────────────────────────────────────
+AlignConsecutiveAssignments:  None
+AlignConsecutiveDeclarations: None
+AlignTrailingComments:
+  Kind:           Always
+  OverEmptyLines: 0
+AlignOperands:    Align
+
+# ── Line breaks ───────────────────────────────────────────────────────────────
+BreakBeforeBinaryOperators:   None
+BreakBeforeTernaryOperators:  true
+BreakStringLiterals:          false   # 문자열 리터럴 자동 분리 금지
+
+# ── Comments ──────────────────────────────────────────────────────────────────
+ReflowComments: false   # // ── 장식 주석 줄 유지
+
+# ── Misc ──────────────────────────────────────────────────────────────────────
+Cpp11BracedListStyle:      true
+DerivePointerAlignment:    false
+FixNamespaceComments:      true   # } // namespace pdk 자동 추가
+MaxEmptyLinesToKeep:       1
+KeepEmptyLinesAtTheStartOfBlocks: false
+SeparateDefinitionBlocks:  Leave
+...

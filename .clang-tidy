@@ -1,0 +1,126 @@
+---
+# pdk-4.0 clang-tidy configuration
+# clang-tidy 18 / C++17
+#
+# 전략: -* 로 전체 비활성화 후 필요한 규칙만 선별 활성화
+# 너무 strict한 규칙(avoid-c-arrays, pro-bounds-* 등)은 의도적으로 제외
+#   - pdk는 시스템 프로그래밍 라이브러리로 POSIX/C 인터페이스 혼용이 필수
+
+Checks: >-
+  -*,
+
+  # ── Bug 탐지 ────────────────────────────────────────────────────────────────
+  bugprone-assert-side-effect,
+  bugprone-dangling-handle,
+  bugprone-infinite-loop,
+  bugprone-integer-division,
+  bugprone-misplaced-operator-in-strlen-in-alloc,
+  bugprone-move-forwarding-reference,
+  bugprone-multiple-statement-macro,
+  bugprone-narrowing-conversions,
+  bugprone-not-null-terminated-result,
+  bugprone-signed-char-misuse,
+  bugprone-sizeof-expression,
+  bugprone-suspicious-memset-usage,
+  bugprone-suspicious-string-compare,
+  bugprone-too-small-loop-variable,
+  bugprone-undefined-memory-manipulation,
+  bugprone-use-after-move,
+  bugprone-virtual-near-miss,
+
+  # ── C++17 현대화 ─────────────────────────────────────────────────────────────
+  modernize-loop-convert,
+  modernize-make-shared,
+  modernize-make-unique,
+  modernize-redundant-void-arg,
+  modernize-use-auto,
+  modernize-use-bool-literals,
+  modernize-use-default-member-init,
+  modernize-use-emplace,
+  modernize-use-equals-default,
+  modernize-use-equals-delete,
+  modernize-use-nodiscard,
+  modernize-use-nullptr,
+  modernize-use-override,
+  modernize-use-using,
+
+  # ── 성능 ────────────────────────────────────────────────────────────────────
+  performance-for-range-copy,
+  performance-implicit-conversion-in-loop,
+  performance-move-const-arg,
+  performance-move-constructor-init,
+  performance-no-automatic-move,
+  performance-noexcept-move-constructor,
+  performance-trivially-destructible,
+  performance-unnecessary-copy-initialization,
+  performance-unnecessary-value-param,
+
+  # ── 가독성 ──────────────────────────────────────────────────────────────────
+  readability-const-return-type,
+  readability-container-size-empty,
+  readability-delete-null-pointer,
+  readability-make-member-function-const,
+  readability-qualified-auto,
+  readability-redundant-smartptr-get,
+  readability-simplify-boolean-expr,
+  readability-static-accessed-through-instance,
+  readability-string-compare,
+
+  # ── C++ Core Guidelines (선별) ───────────────────────────────────────────────
+  cppcoreguidelines-avoid-goto,
+  cppcoreguidelines-init-variables,
+  cppcoreguidelines-narrowing-conversions,
+  cppcoreguidelines-prefer-member-initializer,
+  cppcoreguidelines-pro-type-cstyle-cast,
+  cppcoreguidelines-pro-type-static-cast-downcast,
+  cppcoreguidelines-slicing,
+
+  # ── 정적 분석 ────────────────────────────────────────────────────────────────
+  clang-analyzer-cplusplus.Move,
+  clang-analyzer-cplusplus.NewDelete,
+  clang-analyzer-cplusplus.NewDeleteLeaks,
+  clang-analyzer-unix.Malloc,
+  clang-analyzer-unix.MallocSizeof
+
+# 에러로 처리할 규칙 (빌드 실패 수준)
+# 실제 버그 가능성 높은 것만 지정
+WarningsAsErrors: >-
+  bugprone-use-after-move,
+  bugprone-infinite-loop,
+  clang-analyzer-cplusplus.NewDeleteLeaks
+
+# pdk-4.0 헤더만 분석 (시스템 헤더 제외)
+HeaderFilterRegex: '.*/pdk-4\.0/(include|base)/.*'
+
+# 포맷 스타일은 .clang-format 파일 사용
+FormatStyle: file
+
+CheckOptions:
+  # modernize-use-auto: 짧은 타입명엔 auto 제안 안 함 (int, bool 등)
+  - key:   modernize-use-auto.MinTypeNameLength
+    value: '8'
+
+  # modernize-use-auto: 포인터/레퍼런스도 auto로 제안
+  - key:   modernize-use-auto.RemoveStars
+    value: '0'
+
+  # modernize-loop-convert: 안전한 경우만 변환 제안
+  - key:   modernize-loop-convert.SafetyFactor
+    value: '1.0'
+
+  # modernize-use-default-member-init: = 스타일 (brace 아닌 등호)
+  - key:   modernize-use-default-member-init.UseAssignment
+    value: '1'
+
+  # modernize-use-nodiscard: C++17 [[nodiscard]] 제안 최소화
+  - key:   modernize-use-nodiscard.ReplacementString
+    value: '[[nodiscard]]'
+
+  # performance-unnecessary-value-param: const ref 변환 제안 타입 크기 기준
+  - key:   performance-unnecessary-value-param.AllowedTypes
+    value: ''
+
+  # readability-qualified-auto: 포인터에 auto* 명시 권장
+  - key:   readability-qualified-auto.AddConstToQualified
+    value: '1'
+...
