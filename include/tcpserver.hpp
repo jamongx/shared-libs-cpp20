@@ -2,6 +2,7 @@
 #pragma once
 
 #include <list>
+#include <memory>
 #include <string>
 #include "list.hpp"
 #include "sock.hpp"
@@ -27,10 +28,13 @@ class TcpServer;
 
 class TcpChannel : public Thread {
 public:
-    TcpChannel(TcpServer* server, Socket* sock);
+    // Takes ownership of `sock` via std::unique_ptr so destruction order is
+    // deterministic: close() (which joins the recv thread) runs before the
+    // socket is destroyed, removing the recv-on-deleted-fd race.
+    TcpChannel(TcpServer* server, std::unique_ptr<Socket> sock);
     ~TcpChannel() override;
 
-    Socket* socket_fd() { return sock_; }
+    Socket* socket_fd() { return sock_.get(); }
     TCP_STATUS status() noexcept { return status_; }
     void set_status(TCP_STATUS s) noexcept { status_ = s; }
     [[nodiscard]] int32_t type() const noexcept { return ch_type_; }
@@ -44,7 +48,7 @@ protected:
     void* thread_proc() override;
 
     TcpServer* server_;
-    Socket* sock_;
+    std::unique_ptr<Socket> sock_;
     TCP_STATUS status_{TCP_CONN};
     bool first_{false};
     int32_t ch_type_{0};
@@ -56,10 +60,20 @@ public:
     TcpServer();
     ~TcpServer() override;
 
+    using Thread::start;  // expose Thread::start() (no-arg) alongside the
+                          // bind+listen overload below
+
+    // Override close() to wake the blocked select() in thread_proc by closing
+    // the listening socket before joining. Without this, shutdown hangs.
+    void close() override;
+
     void broadcast(void* Buffer, int nLen);
     void send_all(void* Buffer, int nLen);
     void close_channel(TcpChannel* channel);
-    void start(const char* pszAddr, int32_t nPort);
+    // Bind to (addr, port) and start the accept loop. Returns false if bind
+    // fails — callers should propagate that failure rather than silently
+    // walking to the next port (which surprised many callers in v3.x).
+    bool start(const char* pszAddr, int32_t nPort);
     void add_event(void* Buffer);
     void set_limit(int nCount) noexcept { limit_ = nCount; }
     [[nodiscard]] int count() const noexcept { return limit_; }
@@ -75,12 +89,12 @@ protected:
     void check_channels();
     void* thread_proc() override;
 
-    std::list<TcpChannel*> channels_;
-    TcpSocket* socket_;
+    std::list<std::unique_ptr<TcpChannel>> channels_;
+    std::unique_ptr<TcpSocket> socket_;
     std::string addr_;
     int port_{0};
     int limit_{1};
-    Mutex lock_;
+    std::mutex lock_;
     bool use_event_{true};
     Logger* logger_;
 };

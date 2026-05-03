@@ -31,6 +31,14 @@ UUdpReceiver::UUdpReceiver() : udp_recv_sock_(std::make_unique<UnixUdp>()), logg
 
 UUdpReceiver::~UUdpReceiver()
 {
+    // Order matters: a recv loop blocked in recvfrom() will NOT wake on
+    // the stop flag alone. We must close the socket first to make the
+    // syscall return EBADF, then join. PDK_DERIVED_THREAD_DTOR_CLOSE()
+    // would have joined first, hanging here forever.
+    close_pre();
+    if (udp_recv_sock_)
+        udp_recv_sock_->close();
+    close_post();
     OnAfterReceive = nullptr;
 }
 
@@ -145,6 +153,13 @@ IUdpReceiver::IUdpReceiver()
 
 IUdpReceiver::~IUdpReceiver()
 {
+    // Same ordering as UUdpReceiver: close_pre marks stop, close the
+    // socket to wake recvfrom, then close_post joins. Joining first
+    // would hang on a blocked recv.
+    close_pre();
+    if (udp_recv_sock_)
+        udp_recv_sock_->close();
+    close_post();
     OnAfterReceive = nullptr;
 }
 
@@ -242,6 +257,19 @@ UUdpIfThread::UUdpIfThread(int n)
 {
     udp_channel_->OnAfterReceive = after_receive;
     udp_channel_->OnBeforeSend = before_send;
+}
+
+UUdpIfThread::~UUdpIfThread()
+{
+    // Stop the owned udp_channel_ FIRST. Otherwise its receiver thread
+    // can deliver an after_receive callback into this half-destroyed
+    // object during teardown. Once the channel's recv thread is joined
+    // (its dtor runs close_pre → sock close → close_post), wake and join
+    // our own QThread event loop.
+    if (udp_channel_) {
+        udp_channel_.reset();   // triggers UUdpReceiver dtor → safe stop+join
+    }
+    PDK_DERIVED_THREAD_DTOR_CLOSE();
 }
 
 void UUdpIfThread::start(const char* pszPath)
