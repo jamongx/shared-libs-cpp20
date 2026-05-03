@@ -6,9 +6,16 @@
 namespace pdk {
 
 // ── Event packet sizes ─────────────────────────────────────────────────────────
-#define MAX_EVENTINFO_SIZE (4 * 1024)
-#define EVENTINFO_HEADER_LENGTH (sizeof(XTMMSGHDR) + sizeof(ARSLINE))
-#define MAX_VALUE_SIZE (MAX_EVENTINFO_SIZE - EVENTINFO_HEADER_LENGTH)
+// MAX_EVENTINFO_SIZE is just a literal. EVENTINFO_HEADER_LENGTH and
+// MAX_VALUE_SIZE reference struct types — so we use fully-qualified names
+// (::pdk::XTMMSGHDR, ::pdk::ARSLINE) inside the macros to keep them usable
+// from any namespace.
+#define MAX_EVENTINFO_SIZE       (4 * 1024)
+#define EVENTINFO_HEADER_LENGTH  (sizeof(::pdk::XTMMSGHDR) + sizeof(::pdk::ARSLINE))
+#define MAX_VALUE_SIZE           (MAX_EVENTINFO_SIZE - EVENTINFO_HEADER_LENGTH)
+
+// Modern C++ alternative: prefer these constexpr inline variables in new code.
+// They are defined after the struct definitions below.
 
 // ── Network address structs ────────────────────────────────────────────────────
 struct XTMADDR {
@@ -50,6 +57,17 @@ struct EVENTINFO {
     char Value[MAX_VALUE_SIZE];
 };
 using PEVENTINFO = EVENTINFO*;
+
+// ── Modern constexpr equivalents (preferred over macros above) ─────────────────
+inline constexpr std::size_t kMaxEventInfoSize       = MAX_EVENTINFO_SIZE;
+inline constexpr std::size_t kEventInfoHeaderLength  = sizeof(XTMMSGHDR) + sizeof(ARSLINE);
+inline constexpr std::size_t kMaxValueSize           = kMaxEventInfoSize - kEventInfoHeaderLength;
+static_assert(sizeof(EVENTINFO::Value) == kMaxValueSize,
+              "kMaxValueSize must match EVENTINFO::Value array length");
+
+constexpr int event_value_length(const EVENTINFO* e) noexcept {
+    return e->h.nMsgLen - static_cast<int>(kEventInfoHeaderLength);
+}
 
 // ── Accessor macros ────────────────────────────────────────────────────────────
 #define EVENTINFO_LENGTH(e) ((e)->h.nMsgLen)
@@ -137,7 +155,8 @@ enum EVENTTYPE {
 #define EVENT_RETRY_COUNT 1
 #define EVENT_RETRY_DELAY 100
 
-// EventQueue: bounded queue of EVENTINFO (via Queue<PEVENTINFO,EVENTINFO>)
-using EventQueue = Queue<PEVENTINFO, EVENTINFO>;
+// EventQueue: bounded queue of EVENTINFO. Now uses the simplified Queue<T>;
+// the legacy Queue<P,T> form has been removed in PDK 4.2.
+using EventQueue = Queue<EVENTINFO>;
 
 }  // namespace pdk

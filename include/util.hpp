@@ -69,15 +69,27 @@ protected:
     PMEMITEM cur_ = nullptr;
 };
 
-// ── CircularQueue<TYPE,MAX> ──────────────────────────────────────────────────
+// ── Queue return codes (legacy POD CircularQueue + modern BoundedQueue) ─────
 #define QNODE_FREE 0
 #define QNODE_USE 1
 #define QNODE_SUCCESS 0
 #define QNODE_BUFFER_FULL (-1)
 #define QNODE_BUFFER_EMPTY (-2)
 
+// ── CircularQueue<TYPE,MAX> ──────────────────────────────────────────────────
+// Bounded SPSC/MPMC queue for trivially-copyable POD payloads (uses
+// memcpy/memset). The capacity actually usable is MAX-1 because front==rear
+// means empty. Producers blocked-on-full are released by `unlock_queue()`
+// at destruction.
+//
+// Thread-safety: protected by `crit_sec_`; `sem_put_` and `sem_get_` provide
+// blocking back-pressure. Multiple producers and consumers are supported
+// (counting semaphores serialize the slot account; the mutex serializes
+// front_/rear_ updates).
 template<class TYPE, int MAX>
 class CircularQueue {
+    static_assert(MAX > 1, "CircularQueue capacity MAX must be > 1");
+
 protected:
     struct QNode {
         TYPE data_;
@@ -85,12 +97,15 @@ protected:
     };
 
     QNode nodes_[MAX];
-    unsigned int front_{1};
-    unsigned int rear_{1};
+    unsigned int front_{0};
+    unsigned int rear_{0};
     int max_{MAX};
-    Semaphore sem_put_{static_cast<unsigned>(MAX)};
+    // Effective capacity is MAX - 1 (one slot is sacrificed to disambiguate
+    // empty vs full via front==rear). Initialise sem_put_ accordingly so the
+    // semaphore count and structural capacity always agree.
+    Semaphore sem_put_{static_cast<unsigned>(MAX - 1)};
     Semaphore sem_get_{0};
-    Mutex crit_sec_;
+    std::mutex crit_sec_;
 
     void initialize()
     {
@@ -99,8 +114,11 @@ protected:
             memset(&nodes_[i].data_, 0, sizeof(TYPE));
             nodes_[i].in_use_ = QNODE_FREE;
         }
-        front_ = rear_ = 1;
-        sem_put_.reset_count(MAX);
+        front_ = rear_ = 0;
+        sem_put_.reset_count(MAX - 1);
+        // Without this, reset() on a queue with prior items would leave a
+        // stale sem_get_ count and the next get() would succeed on empty.
+        sem_get_.reset_count(0);
     }
 
 public:
@@ -114,46 +132,92 @@ public:
     }
     void reset() { initialize(); }
 
+    // Observers — take crit_sec_ so a concurrent put/get cannot tear the
+    // front_/rear_ pair we read. Earlier revisions touched the indices
+    // unprotected, which was a data race even though the result was
+    // probably-correct in practice on x86. Now uniform with the producer/
+    // consumer paths.
     void queue_pos(unsigned int& nFront, unsigned int& nRear)
     {
+        std::scoped_lock lk(crit_sec_);
         nFront = front_;
         nRear = rear_;
     }
-    int queue_length() { return max_; }
-    bool empty() { return front_ == rear_; }
-
-    int put(TYPE* data)
+    int queue_length() { return max_; }   // immutable after construction
+    bool empty()
     {
-        sem_put_.lock();
-        crit_sec_.lock();
-        rear_ = (rear_ + 1) % MAX;
-        if (front_ == rear_) {
-            rear_ = (rear_ - 1 + MAX) % MAX;
-            crit_sec_.unlock();
-            return QNODE_BUFFER_FULL;
+        std::scoped_lock lk(crit_sec_);
+        return front_ == rear_;
+    }
+
+    // Blocking put. Returns QNODE_SUCCESS on enqueue.
+    int put(TYPE* data) { return put_impl(data, /*nonblocking=*/false, 0); }
+    int try_put(TYPE* data) { return put_impl(data, /*nonblocking=*/true, 0); }
+
+    int get(TYPE* out) { return get_impl(out, /*nonblocking=*/false, 0); }
+    int try_get(TYPE* out) { return get_impl(out, /*nonblocking=*/true, 0); }
+    int get_timed(TYPE* out, int timeout_ms) {
+        return get_impl(out, /*nonblocking=*/false, timeout_ms);
+    }
+
+private:
+    // Shared put implementation. nonblocking=true → try-once (timeout_ms ignored);
+    // otherwise blocks indefinitely (timeout_ms ignored — Semaphore::lock()).
+    //
+    // PUBLISH ORDERING (Codex round 3 finding): the payload memcpy and the
+    // QNODE_USE marker MUST happen BEFORE rear_ is advanced, otherwise a
+    // concurrent producer P2 could advance rear_ past P1's slot and signal
+    // sem_get_, letting a consumer read P1's not-yet-initialised slot. We
+    // therefore copy/mark FIRST while still holding crit_sec_, then advance
+    // rear_, then signal sem_get_.
+    int put_impl(TYPE* data, bool nonblocking, int /*timeout_ms*/)
+    {
+        if (nonblocking) {
+            if (!sem_put_.lock(0)) return QNODE_BUFFER_FULL;
+        } else {
+            sem_put_.lock();
         }
-        int nIndex = static_cast<int>(rear_);
-        crit_sec_.unlock();
-        memcpy(&nodes_[nIndex].data_, data, sizeof(TYPE));
-        nodes_[nIndex].in_use_ = QNODE_USE;
+        {
+            std::scoped_lock lk(crit_sec_);
+            unsigned int next_rear = (rear_ + 1) % MAX;
+            if (next_rear == front_) {
+                sem_put_.unlock();   // restore reservation, no leak
+                return QNODE_BUFFER_FULL;
+            }
+            // Copy + mark while holding the lock so a concurrent consumer
+            // cannot observe an uninitialised slot.
+            int nIndex = static_cast<int>(rear_);
+            memcpy(&nodes_[nIndex].data_, data, sizeof(TYPE));
+            nodes_[nIndex].in_use_ = QNODE_USE;
+            // Publish only after the payload is committed.
+            rear_ = next_rear;
+        }
         sem_get_.unlock();
         return QNODE_SUCCESS;
     }
 
-    int get(TYPE* pType)
+    int get_impl(TYPE* out, bool nonblocking, int timeout_ms)
     {
-        sem_get_.lock();
-        crit_sec_.lock();
-        if (front_ == rear_) {
-            crit_sec_.unlock();
-            return QNODE_BUFFER_EMPTY;
+        if (nonblocking) {
+            if (!sem_get_.lock(0)) return QNODE_BUFFER_EMPTY;
+        } else if (timeout_ms > 0) {
+            if (!sem_get_.lock(static_cast<unsigned>(timeout_ms)))
+                return QNODE_BUFFER_EMPTY;
+        } else {
+            sem_get_.lock();
         }
-        front_ = (front_ + 1) % MAX;
-        int nIndex = static_cast<int>(front_);
-        crit_sec_.unlock();
-        memcpy(pType, &nodes_[nIndex].data_, sizeof(TYPE));
-        memset(&nodes_[nIndex].data_, 0, sizeof(TYPE));
-        nodes_[nIndex].in_use_ = QNODE_FREE;
+        {
+            std::scoped_lock lk(crit_sec_);
+            if (front_ == rear_) {
+                sem_get_.unlock();
+                return QNODE_BUFFER_EMPTY;
+            }
+            int nIndex = static_cast<int>(front_);
+            memcpy(out, &nodes_[nIndex].data_, sizeof(TYPE));
+            memset(&nodes_[nIndex].data_, 0, sizeof(TYPE));
+            nodes_[nIndex].in_use_ = QNODE_FREE;
+            front_ = (front_ + 1) % MAX;
+        }
         sem_put_.unlock();
         return QNODE_SUCCESS;
     }
@@ -191,7 +255,7 @@ protected:
 
     static bool initialized_;
     static GlobalTimer* instance_;
-    static Mutex lock_;
+    static std::mutex lock_;
 
     // obj → (nWhich → PTimeSpec)
     std::unordered_map<QThread*, std::unordered_map<int, PTimeSpec>> timer_map_;

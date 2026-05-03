@@ -223,12 +223,15 @@ void tokenize(const char* pszLine, std::vector<std::string>& value, const char* 
 
 bool GlobalTimer::initialized_ = false;
 GlobalTimer* GlobalTimer::instance_ = nullptr;
-Mutex GlobalTimer::lock_;
+std::mutex GlobalTimer::lock_;
 
 GlobalTimer::GlobalTimer() : logger_(Logger::get()) {}
 
 GlobalTimer::~GlobalTimer()
 {
+    // Stop + join the timer thread BEFORE the timer_map_ teardown begins;
+    // otherwise thread_proc could iterate on a half-destroyed map.
+    PDK_DERIVED_THREAD_DTOR_CLOSE();
     for (auto& [obj, whichMap] : timer_map_)
         for (auto& [which, pSpec] : whichMap)
             delete pSpec;
@@ -247,13 +250,13 @@ GlobalTimer* GlobalTimer::get()
 
 bool GlobalTimer::start_timer(QThread* obj, int msecs, int nWhich)
 {
-    AutoLock lk(&lock_);
+    std::scoped_lock lk(lock_);
     return AddElement(obj, msecs, nWhich);
 }
 
 bool GlobalTimer::stop_timer(QThread* obj, int nWhich)
 {
-    AutoLock lk(&lock_);
+    std::scoped_lock lk(lock_);
     return RemoveElement(obj, nWhich);
 }
 
@@ -302,7 +305,7 @@ void* GlobalTimer::thread_proc()
     while (!do_exit()) {
         gettimeofday(&ntv, nullptr);
         {
-            AutoLock lk(&lock_);
+            std::scoped_lock lk(lock_);
             for (auto it = timer_list_.begin(); it != timer_list_.end();) {
                 PTimeSpec pSpec = *it;
                 auto objIt = timer_map_.find(pSpec->obj);
