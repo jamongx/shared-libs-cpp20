@@ -1,8 +1,8 @@
-# shared-libs-cpp17 (PDK 4.2)
+# shared-libs-cpp20 (PDK 4.2)
 
 A modern **C++20** systems library for building multithreaded network servers on Linux.
 
-> Directory name retained as `shared-libs-cpp17` for path stability with downstream consumers; PDK 4.2 has graduated to C++20 (std::jthread, std::format, std::stop_token, std::span). The legacy C++17 baseline lives on the `pdk-4.0-cpp17` branch.
+> PDK 4.2 has graduated to C++20 (std::jthread, std::format, std::stop_token, std::span). The legacy C++17 baseline lives on the `pdk-4.0-cpp17` branch.
 
 Originally developed for real-time streaming servers (3G video call, multimedia RingBack Tone) in production telecom environments. Modernized in 4.x: legacy C++03/pthreads → C++17 (4.0) → C++20 (4.2).
 
@@ -65,7 +65,7 @@ ctest --test-dir build
 ## Project Structure
 
 ```
-shared-libs-cpp17/
+shared-libs-cpp20/
 ├── include/          # Public headers (25 .hpp files)
 │   ├── jthread.hpp   # Thread, Mutex, Semaphore, AutoLock
 │   ├── qthread.hpp   # Event-driven thread with message queue
