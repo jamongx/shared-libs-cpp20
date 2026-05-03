@@ -2,6 +2,7 @@
 #pragma once
 
 #include <arpa/inet.h>
+#include <atomic>
 #include <errno.h>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -61,10 +62,10 @@ public:
     bool peer_name(char* rPeerAddress, UINT& rPeerPort);
 
     [[nodiscard]] int addr_type() const { return addr_type_; }
-    [[nodiscard]] int socket_fd() const { return socket_fd_; }
+    [[nodiscard]] int socket_fd() const { return socket_fd_.load(std::memory_order_acquire); }
     [[nodiscard]] const char* path() const { return m_path.empty() ? nullptr : m_path.c_str(); }
 
-    operator PDKSOCKET() const { return socket_fd_; }
+    operator PDKSOCKET() const { return socket_fd_.load(std::memory_order_acquire); }
 
     bool assign_socket(int hSocket, int nAddrType);
 
@@ -73,7 +74,12 @@ protected:
     bool bind(const char* pszPath);
     bool bind(UINT nPort, const char* pszAddr = nullptr);
 
-    PDKSOCKET socket_fd_{INVALID_SOCKET};
+    // socket_fd_ is touched concurrently by the accept thread (in select())
+    // and by close() called from the application thread during shutdown.
+    // Wrap it in std::atomic so the reads/writes are well-defined under
+    // C++ — the underlying int is still passed to ::select etc. via a local
+    // snapshot.
+    std::atomic<int> socket_fd_{INVALID_SOCKET};
     Logger* logger_;
     std::string m_path;
     int addr_type_{AF_INET};

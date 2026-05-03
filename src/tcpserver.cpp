@@ -1,4 +1,5 @@
 // tcpserver.cpp – TCP server implementation (C++17)
+#include <algorithm>
 #include <cerrno>
 #include <cstring>
 #include "eventdefs.hpp"
@@ -7,23 +8,40 @@
 
 namespace pdk {
 
+namespace {
+// Accept-loop poll period. Determines worst-case shutdown latency for the
+// server thread when the listening socket has no pending connection.
+constexpr int kAcceptSelectTimeoutMs = 100;
+}  // namespace
+
 // ── TcpChannel ───────────────────────────────────────────────────────────────
-TcpChannel::TcpChannel(TcpServer* server, Socket* sock)
+TcpChannel::TcpChannel(TcpServer* server, std::unique_ptr<Socket> sock)
     : server_(server),
-      sock_(sock),
+      sock_(std::move(sock)),
       logger_(Logger::get())
 {}
 
 TcpChannel::~TcpChannel()
 {
+    // Order matters:
+    //   1. Set stop flag and (best-effort) close the socket so a thread
+    //      blocked in recv() wakes immediately with an error.
+    //   2. Join the recv thread.
+    //   3. Notify owner via OnClosed.
+    //   4. Destroy the unique_ptr<Socket>.
+    // Earlier code deleted sock_ before joining, allowing the recv loop to
+    // touch a destroyed file descriptor.
+    close_pre();
+    if (sock_) sock_->close();
+    close_post();
     if (server_ && server_->OnClosed)
         server_->OnClosed(this);
-    delete sock_;
     logger_->log(Logger::Info, "~TcpChannel");
 }
 
 int TcpChannel::send(void* Buffer, int nLen)
 {
+    if (!sock_) return -1;
     int nCount = sock_->send(Buffer, nLen);
     if (nCount == -1) {
         logger_->log(Logger::Info, "TcpChannel [%d:%s]", errno, strerror(errno));
@@ -41,9 +59,10 @@ void* TcpChannel::thread_proc()
     MemoryStream m_Stream;
 
     while (!do_exit()) {
-        if (!sock_)
+        Socket* s = sock_.get();
+        if (!s)
             break;
-        nLen = sock_->recv(Buffer, nPkSize);
+        nLen = s->recv(Buffer, nPkSize);
         if (nLen < 1) {
             if (errno != 0)
                 logger_->log("Recv Err:%d:%s", errno, strerror(errno));
@@ -62,8 +81,7 @@ void* TcpChannel::thread_proc()
 
             int nPkLen = pPacket->h.nMsgLen;
             if (nPkLen < 1) {
-                delete sock_;
-                sock_ = nullptr;
+                sock_.reset();   // close + delete via unique_ptr
                 logger_->log(Logger::Error, "Illegal Packet Size[%d] => Dropped", nPkLen);
                 break;
             }
@@ -85,43 +103,57 @@ void* TcpChannel::thread_proc()
 }
 
 // ── TcpServer ────────────────────────────────────────────────────────────────
-TcpServer::TcpServer() : socket_(new TcpSocket), logger_(Logger::get()) {}
+TcpServer::TcpServer() : socket_(std::make_unique<TcpSocket>()), logger_(Logger::get()) {}
 
 TcpServer::~TcpServer()
 {
+    // First, stop the accept thread and any peer channels. Without this,
+    // ~TcpServer would race with thread_proc still pushing into channels_
+    // (or calling OnConnected back into the half-destroyed object) and
+    // could touch the listening socket after we destroy it.
+    close();
+
     OnAfterReceive = nullptr;
-    OnBeforeSend = nullptr;
-    OnConnected = nullptr;
+    OnBeforeSend   = nullptr;
+    OnConnected    = nullptr;
 
     {
-        AutoLock lk(&lock_);
-        for (auto* ch : channels_)
-            delete ch;
-        channels_.clear();
+        std::scoped_lock lk(lock_);
+        channels_.clear();   // each unique_ptr<TcpChannel> joins its recv thread
     }
-    delete socket_;
+    // socket_ unique_ptr handles the listening socket destruction.
     logger_->log(Logger::Info, "~TcpServer End");
+}
+
+void TcpServer::close()
+{
+    // Order matters: signal stop, close the listening socket so select()
+    // wakes immediately, then join. Without the explicit socket close, the
+    // accept thread could be parked in select() forever.
+    close_pre();
+    if (socket_)
+        socket_->close();
+    close_post();
 }
 
 void TcpServer::close_channel(TcpChannel* channel)
 {
     logger_->log(Logger::Info, "Channel[%p] Closed", static_cast<void*>(channel));
-    AutoLock lk(&lock_);
-    auto it = std::find(channels_.begin(), channels_.end(), channel);
-    if (it != channels_.end()) {
-        channels_.erase(it);
-        delete channel;
-    }
+    std::scoped_lock lk(lock_);
+    auto it = std::find_if(channels_.begin(), channels_.end(),
+                           [&](const std::unique_ptr<TcpChannel>& p) {
+                               return p.get() == channel;
+                           });
+    if (it != channels_.end())
+        channels_.erase(it);   // unique_ptr handles delete + signal
 }
 
 void TcpServer::check_channels()
 {
-    AutoLock lk(&lock_);
+    std::scoped_lock lk(lock_);
     for (auto it = channels_.begin(); it != channels_.end();) {
-        TcpChannel* ch = *it;
-        if (ch->status() & TCP_DISC) {
+        if ((*it)->status() & TCP_DISC) {
             it = channels_.erase(it);
-            delete ch;
         } else {
             ++it;
         }
@@ -130,94 +162,95 @@ void TcpServer::check_channels()
 
 void TcpServer::send_all(void* Buffer, int nLen)
 {
-    AutoLock lk(&lock_);
-    for (auto* ch : channels_) {
+    std::scoped_lock lk(lock_);
+    for (auto& ch : channels_) {
         if (OnBeforeSend)
-            OnBeforeSend(ch, Buffer, &nLen);
+            OnBeforeSend(ch.get(), Buffer, &nLen);
     }
 }
 
 void TcpServer::broadcast(void* Buffer, int nLen)
 {
-    AutoLock lk(&lock_);
+    std::scoped_lock lk(lock_);
     PDK16U chType = EVENTINFO_TYPE(reinterpret_cast<PEVENTINFO>(Buffer));
-    for (auto* ch : channels_) {
+    for (auto& ch : channels_) {
         if ((ch->status() & TCP_CONN) && ch->type() == chType) {
             if (OnBeforeSend)
-                OnBeforeSend(ch, Buffer, &nLen);
+                OnBeforeSend(ch.get(), Buffer, &nLen);
         }
     }
 }
 
-void TcpServer::start(const char* pszAddr, int32_t nPort)
+bool TcpServer::start(const char* pszAddr, int32_t nPort)
 {
-    int nRetryCount = 0;
     if (pszAddr)
         addr_ = pszAddr;
     port_ = nPort;
 
-    auto tryBind = [&](int port) -> bool {
-        if (!addr_.empty())
-            return socket_->prepare_to_server(port, addr_.c_str());
-        return socket_->prepare_to_server(port, nullptr);
+    auto try_bind = [&](int port) -> bool {
+        const char* addr = addr_.empty() ? nullptr : addr_.c_str();
+        return socket_->prepare_to_server(port, addr);
     };
 
-    while (!tryBind(port_)) {
-        logger_->log(Logger::Error, "Server Socket Error Addr:%s Port:%d", addr_.c_str(), port_);
-        port_++;
-        if (nRetryCount++ >= 2)
-            break;
+    if (!try_bind(port_)) {
+        logger_->log(Logger::Error,
+                     "TcpServer bind failed: addr=%s port=%d (caller must choose a free port)",
+                     addr_.c_str(), port_);
+        return false;
     }
 
     logger_->log(Logger::Info, "TcpServer Addr:%s Port:%d", addr_.c_str(), port_);
-    create();
+    return create() == 1;
 }
 
 void* TcpServer::thread_proc()
 {
-    int nResult = 0;
     while (!do_exit()) {
-        nResult = socket_->select();
+        // Timed select so close() is observed within kAcceptSelectTimeoutMs
+        // even when no connection is pending.
+        int nResult = socket_->select(kAcceptSelectTimeoutMs);
         if (nResult == -1) {
-            logger_->log("TcpServer #%d, %s", errno, strerror(errno));
+            // EBADF after socket close during shutdown is expected; only log
+            // when we are not exiting.
+            if (!do_exit())
+                logger_->log("TcpServer #%d, %s", errno, strerror(errno));
             break;
         }
         check_channels();
         if (nResult == 0)
-            continue;
+            continue;   // timeout, just loop and re-check do_exit
 
-        Socket* client = nullptr;
+        std::unique_ptr<Socket> client;
         try {
-            client = socket_->accept();
+            client.reset(socket_->accept());
         } catch (...) {
-            logger_->log(Logger::Info, "TcpServer Accept Error");
+            if (!do_exit())
+                logger_->log(Logger::Info, "TcpServer Accept Error");
             break;
         }
         if (!client)
             continue;
 
         {
-            AutoLock lk(&lock_);
+            std::scoped_lock lk(lock_);
             logger_->log(Logger::Info, "Connected Count[%d:%zu]", limit_, channels_.size());
             if (static_cast<int>(channels_.size()) == limit_) {
                 logger_->log(Logger::Error, "Full MAX[%d] connections", limit_);
-                delete client;
-                continue;
+                continue;   // unique_ptr drops the rejected client cleanly
             }
         }
 
-        auto* ch = new TcpChannel(this, client);
+        auto ch = std::make_unique<TcpChannel>(this, std::move(client));
         if (OnConnected)
-            OnConnected(ch);
+            OnConnected(ch.get());
         if (!ch->create()) {
             logger_->log(Logger::Error, "Channel Creation Error");
-            delete ch;
-            continue;
+            continue;   // unique_ptr drops the channel cleanly
         }
-        logger_->log(Logger::Info, "New Channel[%p]", static_cast<void*>(ch));
+        logger_->log(Logger::Info, "New Channel[%p]", static_cast<void*>(ch.get()));
 
-        AutoLock lk(&lock_);
-        channels_.push_back(ch);
+        std::scoped_lock lk(lock_);
+        channels_.push_back(std::move(ch));
     }
     return nullptr;
 }

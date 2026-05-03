@@ -57,14 +57,26 @@ bool Socket::open(UINT /*nPort*/, const char* /*pszAddr*/)
 
 void Socket::close()
 {
-    if (socket_fd_ != INVALID_SOCKET) {
+    // Atomically swap the fd out so concurrent select()/recv() in the
+    // owning thread observes INVALID_SOCKET on its next snapshot.
+    const int fd = socket_fd_.exchange(INVALID_SOCKET, std::memory_order_acq_rel);
+    if (fd != INVALID_SOCKET) {
         struct linger lg {
             1, 0
         };
-        setsockopt(socket_fd_, SOL_SOCKET, SO_LINGER, static_cast<void*>(&lg), sizeof(lg));
-        if (::close(socket_fd_) == SOCKET_ERROR)
+        setsockopt(fd, SOL_SOCKET, SO_LINGER, static_cast<void*>(&lg), sizeof(lg));
+
+        // ::close(fd) alone does NOT wake another thread parked in
+        // recv/recvfrom on Linux — the kernel decrements the refcount but
+        // the syscall keeps blocking. shutdown() actually unblocks pending
+        // I/O on the peer's socket end, returning 0/EOF to the reader.
+        // SHUT_RDWR covers both TCP recv() and UDP recvfrom(); errors are
+        // ignored for sockets that don't support shutdown (e.g. unconnected
+        // UNIX datagram before bind).
+        ::shutdown(fd, SHUT_RDWR);
+
+        if (::close(fd) == SOCKET_ERROR)
             logger_->log(Logger::Info, "close error: %s", strerror(errno));
-        socket_fd_ = INVALID_SOCKET;
     }
     if (!m_path.empty()) {
         unlink(m_path.c_str());
@@ -164,33 +176,40 @@ bool Socket::bind(UINT nPort, const char* pszAddr)
 
 int Socket::select(int timeout)
 {
-    if (socket_fd_ == INVALID_SOCKET)
+    // Take ONE atomic snapshot at the top so a concurrent close() that
+    // invalidates socket_fd_ between the FD_SET and the ::select call
+    // cannot make us pass a stale fd. Subsequent operations all use the
+    // local snapshot; if close() runs mid-call, ::select returns EBADF
+    // which the caller treats as "exit cleanly".
+    const int fd = socket_fd_.load(std::memory_order_acquire);
+    if (fd == INVALID_SOCKET)
         return -1;
     fd_set fd_read;
     timeval sel_timeout;
     FD_ZERO(&fd_read);
-    FD_SET(socket_fd_, &fd_read);
+    FD_SET(fd, &fd_read);
     sel_timeout.tv_sec = timeout / 1000;
     sel_timeout.tv_usec = (timeout % 1000) * 1000;
-    int selnum = ::select(socket_fd_ + 1, &fd_read, nullptr, nullptr, &sel_timeout);
+    int selnum = ::select(fd + 1, &fd_read, nullptr, nullptr, &sel_timeout);
     if (selnum == -1)
         return -1;
-    if (selnum == 0 || !FD_ISSET(socket_fd_, &fd_read))
+    if (selnum == 0 || !FD_ISSET(fd, &fd_read))
         return 0;
     return 1;
 }
 
 int Socket::select()
 {
-    if (socket_fd_ == INVALID_SOCKET)
+    const int fd = socket_fd_.load(std::memory_order_acquire);
+    if (fd == INVALID_SOCKET)
         return -1;
     fd_set fd_read;
     FD_ZERO(&fd_read);
-    FD_SET(socket_fd_, &fd_read);
-    int selnum = ::select(socket_fd_ + 1, &fd_read, nullptr, nullptr, nullptr);
+    FD_SET(fd, &fd_read);
+    int selnum = ::select(fd + 1, &fd_read, nullptr, nullptr, nullptr);
     if (selnum == -1)
         return -1;
-    if (selnum == 0 || !FD_ISSET(socket_fd_, &fd_read))
+    if (selnum == 0 || !FD_ISSET(fd, &fd_read))
         return 0;
     return 1;
 }

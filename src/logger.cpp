@@ -1,11 +1,14 @@
 // logger.cpp – Logger implementation
+#include "logger.hpp"
+
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <filesystem>
+#include <system_error>
 #include <sys/stat.h>
 #include <unistd.h>
-#include "logger.hpp"
 
 namespace pdk {
 
@@ -36,6 +39,13 @@ int Logger::make_date()
 }
 
 // ── check_quota ────────────────────────────────────────────────────────────────
+// Returns true only when rotation actually occurred (file exceeded the quota
+// MB and was renamed). The active dated file (e.g., "prefix.0501") is moved
+// to "prefix.0501.1" while older "*.N" files cascade to "*.N+1". The caller
+// is then expected to call do_open() exactly once to recreate the dated
+// file. Earlier versions only rotated "prefix.0"/".1"/... slots and never
+// touched the actually-open dated file, leaving the over-quota file in
+// place AND triggering close/open on every subsequent log message.
 #define MAX_QUATA_INDEX 7
 bool Logger::check_quota()
 {
@@ -43,33 +53,37 @@ bool Logger::check_quota()
     if (quota_ < 1)
         return false;
 
-    if (logger_path_.empty()) {
-        char tmp[512];
-        snprintf(tmp, sizeof(tmp), "%s%s.0", root_path_.c_str(), prefix_.c_str());
-        logger_path_ = tmp;
+    if (logger_path_.empty())
+        return false;   // file not yet opened — nothing to rotate
+
+    if (stat(logger_path_.c_str(), &buf) != 0)
+        return false;   // file not present yet — nothing to rotate
+
+    if (static_cast<double>(buf.st_size) / 1048576.0 <= static_cast<double>(quota_))
+        return false;   // under quota — keep writing to current file
+
+    // Close the current file first; we'll move it and re-open afresh.
+    if (file_.fd_ != File::hFileNull)
+        file_.close();
+
+    // Cascade existing rotated slots: prefix.5 → prefix.6, ..., prefix.1 → prefix.2.
+    char oldName[512], newName[512];
+    for (int i = MAX_QUATA_INDEX - 1; i > 0; i--) {
+        snprintf(oldName, sizeof(oldName), "%s%s.%d",
+                 root_path_.c_str(), prefix_.c_str(), i);
+        if (stat(oldName, &buf) != 0)
+            continue;
+        snprintf(newName, sizeof(newName), "%s%s.%d",
+                 root_path_.c_str(), prefix_.c_str(), i + 1);
+        rename(oldName, newName);
     }
 
-    if (!stat(logger_path_.c_str(), &buf)) {
-        if (static_cast<double>(buf.st_size) / 1048576.0 > static_cast<double>(quota_)) {
-            if (file_.fd_ != File::hFileNull)
-                file_.close();
+    // Move the active dated file to slot .1 so the next do_open() can
+    // create a fresh empty file at logger_path_.
+    snprintf(newName, sizeof(newName), "%s%s.1",
+             root_path_.c_str(), prefix_.c_str());
+    rename(logger_path_.c_str(), newName);
 
-            char oldName[512], newName[512];
-            for (int i = MAX_QUATA_INDEX - 1; i > 0; i--) {
-                snprintf(oldName,
-                         sizeof(oldName),
-                         "%s%s.%d",
-                         root_path_.c_str(),
-                         prefix_.c_str(),
-                         i - 1);
-                if (stat(oldName, &buf) != 0)
-                    continue;
-                snprintf(
-                    newName, sizeof(newName), "%s%s.%d", root_path_.c_str(), prefix_.c_str(), i);
-                rename(oldName, newName);
-            }
-        }
-    }
     return true;
 }
 
@@ -85,7 +99,26 @@ bool Logger::do_open()
     if (file_.fd_ != File::hFileNull)
         file_.close();
 
-    bool ok = file_.open(logger_path_.c_str(), File::modeWrite | File::modeNoTruncate);
+    // Ensure the (possibly nested) parent directory exists. Use
+    // std::filesystem so multi-level paths like "./var/log/svc/" work, and
+    // surface errors via stderr rather than silently failing in open().
+    auto pos = logger_path_.find_last_of('/');
+    if (pos != std::string::npos) {
+        std::string dir = logger_path_.substr(0, pos);
+        if (!dir.empty()) {
+            std::error_code ec;
+            std::filesystem::create_directories(dir, ec);
+            if (ec) {
+                fprintf(stderr,
+                        "[Logger] cannot create directory '%s': %s\n",
+                        dir.c_str(), ec.message().c_str());
+                // Fall through and let open() report the resulting error too.
+            }
+        }
+    }
+
+    bool ok = file_.open(logger_path_.c_str(),
+                         File::modeWrite | File::modeNoTruncate | File::modeCreate);
     if (!ok)
         fprintf(stderr, "[Logger] failed to open log file: %s\n", logger_path_.c_str());
     return ok;

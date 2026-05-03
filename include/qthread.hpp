@@ -11,7 +11,7 @@ public:
     explicit QThread(int nBufferLen);
     ~QThread() override = default;
 
-    virtual bool start();
+    bool start() override;
     virtual void stop();
     void close() override;
 

@@ -1,8 +1,12 @@
 cmake_minimum_required(VERSION 3.16)
-project(pdk VERSION 4.0.0 LANGUAGES CXX)
+project(pdk VERSION 4.2.0 LANGUAGES CXX)
 
-# ── C++17 standard (required, no extensions) ──────────────────────────────────
-set(CMAKE_CXX_STANDARD 17)
+# ── C++20 standard (no extensions) ─────────────────────────────────────────────
+# v4.2 raised the language level so the library can use std::jthread,
+# std::stop_token, std::format, and std::span for type-safe, RAII-clean APIs.
+# Directory name remains shared-libs-cpp17 for backward compatibility with
+# existing consumer paths.
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -101,4 +105,7 @@ if(BUILD_TESTING)
     add_test(NAME test_pgpool COMMAND test_pgpool)
 endif()
 
-message(STATUS "PDK 4.0 – C++17 build configured (${CMAKE_BUILD_TYPE})")
+message(STATUS
+    "PDK ${PROJECT_VERSION} – C++${CMAKE_CXX_STANDARD} build configured (${CMAKE_BUILD_TYPE})"
+    " — directory still named shared-libs-cpp17 for path stability"
+)

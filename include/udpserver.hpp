@@ -35,6 +35,7 @@ public:
     UUdpReceiver();
     ~UUdpReceiver() override;
 
+    using Thread::start;
     virtual void start(QThread* pOwner, const char* pszPath);
     void add_event(PEVENTINFO pBuffer);
     void add_event(void* pBuffer, int nLen);
@@ -91,6 +92,7 @@ public:
     IUdpReceiver();
     ~IUdpReceiver() override;
 
+    using Thread::start;
     [[nodiscard]] virtual bool start(QThread* pOwner, const char* pszAddr, int32_t nPort);
     void add_event(void* pBuffer);
     void add_event(void* pBuffer, int nLen);
@@ -134,7 +136,11 @@ class UUdpIfThread : public QThread {
 public:
     UUdpIfThread();
     explicit UUdpIfThread(int n);
-    ~UUdpIfThread() override = default;
+    // Explicit dtor that runs the canonical wakeup-then-join sequence
+    // before any derived members tear down. The previous `= default` would
+    // have left QThread::close() unreachable from a base destructor (see
+    // jthread.hpp Thread dtor warning box).
+    ~UUdpIfThread() override;
 
     using QThread::start;
 
