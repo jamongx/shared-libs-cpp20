@@ -1,8 +1,10 @@
-# shared-libs-cpp17
+# shared-libs-cpp17 (PDK 4.2)
 
-A modern C++17 systems library for building multithreaded network servers on Linux.
+A modern **C++20** systems library for building multithreaded network servers on Linux.
 
-Originally developed for real-time streaming servers (3G video call, multimedia RingBack Tone) in production telecom environments, this library has been modernized from legacy C++03/pthreads to C++17 standard library primitives.
+> Directory name retained as `shared-libs-cpp17` for path stability with downstream consumers; PDK 4.2 has graduated to C++20 (std::jthread, std::format, std::stop_token, std::span). The legacy C++17 baseline lives on the `pdk-4.0-cpp17` branch.
+
+Originally developed for real-time streaming servers (3G video call, multimedia RingBack Tone) in production telecom environments. Modernized in 4.x: legacy C++03/pthreads → C++17 (4.0) → C++20 (4.2).
 
 ## Features
 
@@ -18,12 +20,16 @@ Originally developed for real-time streaming servers (3G video call, multimedia 
 
 ## Modern C++ Highlights
 
-- **C++17 standard**, no compiler extensions
-- **RAII everywhere** — `AutoLock` (lock_guard), `PgGuard` (scoped DB connection), `File`, `Archive`
+- **C++20 standard**, no compiler extensions
+- **`std::jthread` + `std::stop_source`** — RAII threading with cooperative cancellation (PDK 4.2)
+- **`std::format` logging** — type-safe `PDK_LOG_*_FMT` macros (PDK 4.2)
+- **Templated `IniFile::get<T>`** — `std::optional<T>` typed config access (PDK 4.2)
+- **RAII everywhere** — `std::scoped_lock`, `PgGuard` (scoped DB connection), `File`, `Archive`
 - **Smart pointers** — `std::unique_ptr` for owned resources, move-only types
-- **Standard threading** — `std::thread`, `std::mutex`, `std::condition_variable`, `std::atomic` with explicit memory ordering
+- **Standard threading** — `std::mutex`, `std::condition_variable`, `std::atomic` with explicit memory ordering
 - **Modern idioms** — `std::optional`, `std::function`, `[[nodiscard]]`, `noexcept`, lambda captures, move semantics
 - **Code quality** — clang-format (Google-based), clang-tidy, `-Wall -Wextra -Wpedantic`
+- **Deprecated in 4.2** — `pdk::Mutex` / `pdk::AutoLock` (replaced by `std::mutex` / `std::scoped_lock`); legacy `Queue<P, T>` (replaced by `Queue<T>`)
 
 ## Build
 
@@ -52,7 +58,7 @@ ctest --test-dir build
 ## Requirements
 
 - CMake 3.16+
-- GCC or Clang with C++17 support
+- GCC 13+ / Clang 16+ (C++20 with `<format>` and `<stop_token>`)
 - Linux
 - PostgreSQL dev libraries (optional, for connection pool)
 
@@ -72,7 +78,7 @@ shared-libs-cpp17/
 ├── src/              # Implementation files (13 .cpp files)
 ├── test/             # GoogleTest tests
 ├── CMakeLists.txt
-├── .clang-format     # Google-based C++17 formatting
+├── .clang-format     # Google-based C++20 formatting
 └── .clang-tidy       # Static analysis rules
 ```
 
