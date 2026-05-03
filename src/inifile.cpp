@@ -1,10 +1,11 @@
 // inifile.cpp – INI file parser implementation (C++17)
+#include "inifile.hpp"
+
 #include <algorithm>
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include "inifile.hpp"
 
 namespace pdk {
 
@@ -261,6 +262,143 @@ int IniFile::find_value(int keynum, const std::string& valuename) const
         if (names[i] == valuename)
             return i;
     return -1;
+}
+
+// ── Modern accessors ─────────────────────────────────────────────────────────
+
+std::optional<std::string> IniFile::try_get_string(std::string_view section,
+                                                   std::string_view key)
+{
+    std::string s_section{section};
+    std::string s_key{key};
+    int keynum = find_key(s_section);
+    if (keynum < 0) return std::nullopt;
+    int valnum = find_value(keynum, s_key);
+    if (valnum < 0) return std::nullopt;
+    return keys_[keynum].values[valnum];
+}
+
+namespace {
+// Trim trailing/leading whitespace so callers can ignore formatting drift.
+std::string trim(const std::string& s)
+{
+    auto first = s.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) return {};
+    auto last = s.find_last_not_of(" \t\r\n");
+    return s.substr(first, last - first + 1);
+}
+}  // namespace
+
+std::optional<int> IniFile::try_get_int(std::string_view section, std::string_view key)
+{
+    auto s = try_get_string(section, key);
+    if (!s) return std::nullopt;
+    const std::string trimmed = trim(*s);
+    if (trimmed.empty()) return std::nullopt;
+    try {
+        std::size_t consumed = 0;
+        int v = std::stoi(trimmed, &consumed);
+        // Reject partial parses like "12abc" — the entire trimmed value
+        // must be consumed for the result to be trustworthy.
+        if (consumed != trimmed.size()) return std::nullopt;
+        return v;
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
+std::optional<double> IniFile::try_get_double(std::string_view section, std::string_view key)
+{
+    auto s = try_get_string(section, key);
+    if (!s) return std::nullopt;
+    const std::string trimmed = trim(*s);
+    if (trimmed.empty()) return std::nullopt;
+    try {
+        std::size_t consumed = 0;
+        double v = std::stod(trimmed, &consumed);
+        if (consumed != trimmed.size()) return std::nullopt;
+        return v;
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
+std::string IniFile::get_string_or(std::string_view section, std::string_view key,
+                                   std::string_view default_value)
+{
+    auto v = try_get_string(section, key);
+    return v ? *v : std::string{default_value};
+}
+
+int IniFile::get_int_or(std::string_view section, std::string_view key, int default_value)
+{
+    auto v = try_get_int(section, key);
+    return v.value_or(default_value);
+}
+
+double IniFile::get_double_or(std::string_view section, std::string_view key, double default_value)
+{
+    auto v = try_get_double(section, key);
+    return v.value_or(default_value);
+}
+
+namespace {
+bool parse_bool(const std::string& v) {
+    std::string s;
+    s.reserve(v.size());
+    for (char c : v) s.push_back(static_cast<char>(::tolower(static_cast<unsigned char>(c))));
+    if (s == "1" || s == "true" || s == "yes" || s == "on" || s == "y") return true;
+    return false;  // anything else (incl. explicit "false/no/off/0") → false
+}
+bool is_truthy(const std::string& trimmed) {
+    return parse_bool(trimmed);
+}
+bool is_explicitly_false(const std::string& trimmed) {
+    std::string s;
+    s.reserve(trimmed.size());
+    for (char c : trimmed) s.push_back(static_cast<char>(::tolower(static_cast<unsigned char>(c))));
+    return s == "0" || s == "false" || s == "no" || s == "off" || s == "n";
+}
+}  // namespace
+
+bool IniFile::get_bool_or(std::string_view section, std::string_view key, bool default_value)
+{
+    auto v = try_get_string(section, key);
+    if (!v) return default_value;
+    const std::string trimmed = trim(*v);
+    if (trimmed.empty()) return default_value;
+    if (is_truthy(trimmed)) return true;
+    if (is_explicitly_false(trimmed)) return false;
+    return default_value;
+}
+
+// ── Templated get<T>() specializations ────────────────────────────────────────
+
+template<>
+std::optional<std::string> IniFile::get<std::string>(std::string_view section,
+                                                     std::string_view key) {
+    return try_get_string(section, key);
+}
+
+template<>
+std::optional<int> IniFile::get<int>(std::string_view section, std::string_view key) {
+    return try_get_int(section, key);
+}
+
+template<>
+std::optional<double> IniFile::get<double>(std::string_view section, std::string_view key) {
+    return try_get_double(section, key);
+}
+
+template<>
+std::optional<bool> IniFile::get<bool>(std::string_view section, std::string_view key) {
+    auto v = try_get_string(section, key);
+    if (!v) return std::nullopt;
+    const std::string trimmed = trim(*v);
+    if (trimmed.empty()) return std::nullopt;
+    if (is_truthy(trimmed)) return true;
+    if (is_explicitly_false(trimmed)) return false;
+    return std::nullopt;  // unknown literal — refuse to guess
 }
 
 }  // namespace pdk
